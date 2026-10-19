@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>AirCanvas - Extended Brushes & Colors</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      background: #000000;
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      height: 100vh;
+      user-select: none;
+    }
+    #hud {
+      width: 100%;
+      padding: 10px 24px;
+      background: rgba(18, 18, 18, 0.95);
+      border-bottom: 1px solid #333;
+      display: flex;
+      justify-content: space-around;
+      align-items: center;
+      z-index: 10;
+    }
+    .hud-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+      font-weight: 500;
+    }
+    #colorPreview {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      border: 2px solid #fff;
+      display: inline-block;
+    }
+    #bgToggleBtn {
+      background: #2a2a2a;
+      border: 1px solid #555;
+      color: #fff;
+      padding: 6px 14px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    #bgToggleBtn:hover {
+      background: #3a3a3a;
+    }
+    #container {
+      position: relative;
+      flex: 1;
+      width: 100%;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    #inputVideo {
+      display: none;
+    }
+    canvas {
+      position: absolute;
+      width: 1280px;
+      height: 720px;
+      max-width: 95vw;
+      max-height: 82vh;
+      border-radius: 8px;
+      box-shadow: 0 0 25px rgba(0,0,0,0.8);
+      transform: scaleX(-1);
+    }
+    #cursorCanvas {
+      pointer-events: none;
+      z-index: 5;
+    }
+    #exitOverlay {
+      display: none;
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: #000;
+      color: #fff;
+      z-index: 100;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      font-size: 24px;
+    }
+  </style>
+
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+  <div id="hud">
+    <div class="hud-item">Gesture: <span id="lblGesture" style="color:#00ffcc;">Connecting Camera...</span></div>
+    <div class="hud-item">Brush: <span id="lblBrush" style="color:#ffcc00;">Solid</span></div>
+    <div class="hud-item">
+      Color: <span id="lblColor">Electric Blue</span>
+      <span id="colorPreview" style="background:#007bff;"></span>
+    </div>
+    <div class="hud-item">
+      <button id="bgToggleBtn" onclick="toggleBackground()">Switch to White Background</button>
+    </div>
+  </div>
+
+  <div id="container">
+    <video id="inputVideo" autoplay playsinline muted></video>
+    <canvas id="drawingCanvas"></canvas>
+    <canvas id="cursorCanvas"></canvas>
+  </div>
+
+  <div id="exitOverlay">
+    <p>AirCanvas has shut down.</p>
+    <p style="font-size: 15px; color: #888; margin-top: 10px;">Camera session released. You can close this window.</p>
+  </div>
+
+  <script>
+    const videoElement = document.getElementById('inputVideo');
+    const drawingCanvas = document.getElementById('drawingCanvas');
+    const drawCtx = drawingCanvas.getContext('2d');
+    const cursorCanvas = document.getElementById('cursorCanvas');
+    const cursorCtx = cursorCanvas.getContext('2d');
+
+    const lblGesture = document.getElementById('lblGesture');
+    const lblBrush = document.getElementById('lblBrush');
+    const lblColor = document.getElementById('lblColor');
+    const colorPreview = document.getElementById('colorPreview');
+    const bgToggleBtn = document.getElementById('bgToggleBtn');
+    const exitOverlay = document.getElementById('exitOverlay');
+
+    let currentBgColor = '#000000';
+
+    const PALETTE = [
+      { name: "Electric Blue", hex: "#007bff" },
+      { name: "Emerald Green", hex: "#00e676" },
+      { name: "Crimson Red", hex: "#ff1744" },
+      { name: "Amber Yellow", hex: "#ffd600" },
+      { name: "Magenta", hex: "#f50057" },
+      { name: "Bright Cyan", hex: "#00e5ff" },
+      { name: "Sunset Orange", hex: "#ff6d00" },
+      { name: "Pure White", hex: "#ffffff" },
+      { name: "Deep Purple", hex: "#7c4dff" },
+      { name: "Hot Pink", hex: "#ff4081" },
+      { name: "Lime Glow", hex: "#76ff03" },
+      { name: "Charcoal", hex: "#212121" }
+    ];
+
+    const BRUSH_TYPES = [
+      "Solid",
+      "Neon Glow",
+      "Calligraphy",
+      "Spray / Particle",
+      "Dotted",
+      "Highlighter",
+      "Rainbow"
+    ];
+
+    let colorIdx = 0;
+    let brushIdx = 0;
+    let rainbowHue = 0;
+
+    let baseBrushSize = 7;
+    let eraserRadius = 45;
+
+    let prevX = 0, prevY = 0;
+    let isDrawing = false;
+    let cooldown = 0;
+    const COOLDOWN_LIMIT = 20;
+
+    const undoStack = [];
+    const redoStack = [];
+
+    function initCanvasResolution() {
+      drawingCanvas.width = 1280;
+      drawingCanvas.height = 720;
+      cursorCanvas.width = 1280;
+      cursorCanvas.height = 720;
+      drawCtx.lineCap = 'round';
+      drawCtx.lineJoin = 'round';
+
+      drawCtx.fillStyle = currentBgColor;
+      drawCtx.fillRect(0, 0, drawingCanvas.width, drawingCanvas.height);
+    }
+    initCanvasResolution();
+
+    function toggleBackground() {
+      const currentDrawing = drawCtx.getImageData(0, 0, drawingCanvas.width, drawingCanvas.height);
+      if (currentBgColor === '#000000') {
+        currentBgColor = '#ffffff';
+        bgToggleBtn.textContent = 'Switch to Black Background';
+        document.body.style.background = '#e5e5e5';
+      } else {
+        currentBgColor = '#000000';
+        bgToggleBtn.textContent = 'Switch to White Background';
+        document.body.style.background = '#000000';
+      }
+      drawCtx.fillStyle = currentBgColor;
+      drawCtx.fillRect(0, 0, drawingCanvas.width, drawingCanvas.height);
+      drawCtx.putImageData(currentDrawing, 0, 0);
+    }
+
+    function saveState() {
+      undoStack.push(drawCtx.getImageData(0, 0, drawingCanvas.width, drawingCanvas.height));
+      if (undoStack.length > 25) undoStack.shift();
+      redoStack.length = 0;
+    }
+
+    function getDistance(p1, p2) {
+      return Math.hypot(p1.x - p2.x, p1.y - p2.y);
+    }
+
+    function getFingerStates(lms) {
+      const wrist = lms[0];
+      const isCurled = (tipIdx, mcpIdx) => getDistance(lms[tipIdx], wrist) < getDistance(lms[mcpIdx], wrist);
+      const isExtended = (tipIdx, pipIdx, mcpIdx) => lms[tipIdx].y < lms[pipIdx].y && getDistance(lms[tipIdx], wrist) > getDistance(lms[mcpIdx], wrist);
+
+      const thumbExtended = lms[4].y < lms[3].y && getDistance(lms[4], wrist) > getDistance(lms[2], wrist);
+      const indexExtended = isExtended(8, 6, 5);
+      const middleExtended = isExtended(12, 10, 9);
+      const ringExtended = isExtended(16, 14, 13);
+      const pinkyExtended = isExtended(20, 18, 17);
+
+      const allCurled = isCurled(8, 5) && isCurled(12, 9) && isCurled(16, 13) && isCurled(20, 17);
+
+      return {
+        thumb: thumbExtended,
+        index: indexExtended,
+        middle: middleExtended,
+        ring: ringExtended,
+        pinky: pinkyExtended,
+        isFist: allCurled
+      };
+    }
+
+    let cameraInstance = null;
+
+    function quitApplication() {
+      if (cameraInstance) cameraInstance.stop();
+      const stream = videoElement.srcObject;
+      if (stream) stream.getTracks().forEach(track => track.stop());
+      exitOverlay.style.display = 'flex';
+      window.close();
+    }
+
+    function renderBrushStroke(fromX, fromY, toX, toY, activeColor, brushName) {
+      drawCtx.save();
+      drawCtx.setLineDash([]);
+
+      switch (brushName) {
+        case "Solid":
+          drawCtx.strokeStyle = activeColor;
+          drawCtx.lineWidth = baseBrushSize;
+          drawCtx.beginPath();
+          drawCtx.moveTo(fromX, fromY);
+          drawCtx.lineTo(toX, toY);
+          drawCtx.stroke();
+          break;
+
+        case "Neon Glow":
+          drawCtx.shadowColor = activeColor;
+          drawCtx.shadowBlur = 22;
+          drawCtx.strokeStyle = "#ffffff";
+          drawCtx.lineWidth = baseBrushSize;
+          drawCtx.beginPath();
+          drawCtx.moveTo(fromX, fromY);
+          drawCtx.lineTo(toX, toY);
+          drawCtx.stroke();
+          break;
+
+        case "Calligraphy":
+          drawCtx.strokeStyle = activeColor;
+          drawCtx.lineWidth = baseBrushSize * 1.8;
+          drawCtx.beginPath();
+          drawCtx.moveTo(fromX - 5, fromY - 5);
+          drawCtx.lineTo(toX + 5, toY + 5);
+          drawCtx.stroke();
+          break;
+
+        case "Spray / Particle":
+          drawCtx.fillStyle = activeColor;
+          const density = 25;
+          const sprayRadius = 18;
+          for (let i = 0; i < density; i++) {
+            const angle = Math.random() * Math.PI * 2;
+            const r = Math.random() * sprayRadius;
+            const px = toX + r * Math.cos(angle);
+            const py = toY + r * Math.sin(angle);
+            drawCtx.beginPath();
+            drawCtx.arc(px, py, Math.random() * 1.5 + 0.5, 0, Math.PI * 2);
+            drawCtx.fill();
+          }
+          break;
+
+        case "Dotted":
+          drawCtx.strokeStyle = activeColor;
+          drawCtx.lineWidth = baseBrushSize;
+          drawCtx.setLineDash([2, 14]);
+          drawCtx.beginPath();
+          drawCtx.moveTo(fromX, fromY);
+          drawCtx.lineTo(toX, toY);
+          drawCtx.stroke();
+          break;
+
+        case "Highlighter":
+          drawCtx.globalAlpha = 0.35;
+          drawCtx.strokeStyle = activeColor;
+          drawCtx.lineWidth = baseBrushSize * 3.5;
+          drawCtx.lineCap = 'square';
+          drawCtx.beginPath();
+          drawCtx.moveTo(fromX, fromY);
+          drawCtx.lineTo(toX, toY);
+          drawCtx.stroke();
+          break;
+
+        case "Rainbow":
+          rainbowHue = (rainbowHue + 4) % 360;
+          drawCtx.strokeStyle = `hsl(${rainbowHue}, 100%, 55%)`;
+          drawCtx.lineWidth = baseBrushSize + 2;
+          drawCtx.beginPath();
+          drawCtx.moveTo(fromX, fromY);
+          drawCtx.lineTo(toX, toY);
+          drawCtx.stroke();
+          break;
+      }
+
+      drawCtx.restore();
+    }
+
+    function onResults(results) {
+      cursorCtx.clearRect(0, 0, cursorCanvas.width, cursorCanvas.height);
+      if (cooldown > 0) cooldown--;
+
+      if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+        lblGesture.textContent = "No Hand Detected";
+        isDrawing = false;
+        prevX = 0;
+        prevY = 0;
+        return;
+      }
+
+      const lms = results.multiHandLandmarks[0];
+      const state = getFingerStates(lms);
+      const pinchDist = getDistance(lms[4], lms[8]);
+
+      const currentX = lms[8].x * drawingCanvas.width;
+      const currentY = lms[8].y * drawingCanvas.height;
+      const palmX = lms[9].x * drawingCanvas.width;
+      const palmY = lms[9].y * drawingCanvas.height;
+
+      // 3. FIST: All fingers curled -> Clean Quit
+      if (state.isFist) {
+        lblGesture.textContent = "Fist: Exiting...";
+        quitApplication();
+        return;
+      }
+
+      // 2. PALM: Erase
+      if (state.index && state.middle && state.ring && state.pinky) {
+        lblGesture.textContent = "Palm: Erasing";
+        isDrawing = false;
+        prevX = 0;
+        prevY = 0;
+
+        drawCtx.save();
+        drawCtx.fillStyle = currentBgColor;
+        drawCtx.beginPath();
+        drawCtx.arc(palmX, palmY, eraserRadius, 0, Math.PI * 2);
+        drawCtx.fill();
+        drawCtx.restore();
+
+        cursorCtx.beginPath();
+        cursorCtx.arc(palmX, palmY, eraserRadius, 0, Math.PI * 2);
+        cursorCtx.strokeStyle = currentBgColor === '#000000' ? '#ffffff' : '#000000';
+        cursorCtx.lineWidth = 2;
+        cursorCtx.stroke();
+        return;
+      }
+
+      // 6. PINCH: Brush Mode Switch
+      if (pinchDist < 0.055) {
+        isDrawing = false;
+        prevX = 0;
+        prevY = 0;
+        if (cooldown === 0) {
+          brushIdx = (brushIdx + 1) % BRUSH_TYPES.length;
+          lblBrush.textContent = BRUSH_TYPES[brushIdx];
+          cooldown = COOLDOWN_LIMIT;
+        }
+        lblGesture.textContent = "Pinch: Brush Changed";
+        return;
+      }
+
+      // 7. TWO FINGERS: Color Change
+      if (state.index && state.middle && !state.ring && !state.pinky) {
+        isDrawing = false;
+        prevX = 0;
+        prevY = 0;
+        if (cooldown === 0) {
+          colorIdx = (colorIdx + 1) % PALETTE.length;
+          lblColor.textContent = PALETTE[colorIdx].name;
+          colorPreview.style.background = PALETTE[colorIdx].hex;
+          cooldown = COOLDOWN_LIMIT;
+        }
+        lblGesture.textContent = "2 Fingers: Color Changed";
+        return;
+      }
+
+      // 5. THREE FINGERS: Undo
+      if (state.index && state.middle && state.ring && !state.pinky) {
+        isDrawing = false;
+        prevX = 0;
+        prevY = 0;
+        if (cooldown === 0 && undoStack.length > 0) {
+          redoStack.push(drawCtx.getImageData(0, 0, drawingCanvas.width, drawingCanvas.height));
+          drawCtx.putImageData(undoStack.pop(), 0, 0);
+          cooldown = COOLDOWN_LIMIT;
+        }
+        lblGesture.textContent = "3 Fingers: Undo";
+        return;
+      }
+
+      // 4. THUMBS UP: Redo
+      if (state.thumb && !state.index && !state.middle && !state.ring && !state.pinky) {
+        isDrawing = false;
+        prevX = 0;
+        prevY = 0;
+        if (cooldown === 0 && redoStack.length > 0) {
+          undoStack.push(drawCtx.getImageData(0, 0, drawingCanvas.width, drawingCanvas.height));
+          drawCtx.putImageData(redoStack.pop(), 0, 0);
+          cooldown = COOLDOWN_LIMIT;
+        }
+        lblGesture.textContent = "Thumbs Up: Redo";
+        return;
+      }
+
+      // 1. INDEX ONLY: Drawing
+      if (state.index && !state.middle && !state.ring && !state.pinky) {
+        lblGesture.textContent = "Index: Drawing";
+
+        if (!isDrawing) {
+          saveState();
+          isDrawing = true;
+          prevX = currentX;
+          prevY = currentY;
+        }
+
+        const activeColor = PALETTE[colorIdx].hex;
+        const currentBrush = BRUSH_TYPES[brushIdx];
+
+        renderBrushStroke(prevX, prevY, currentX, currentY, activeColor, currentBrush);
+
+        prevX = currentX;
+        prevY = currentY;
+
+        // Visual pointer on fingertip
+        cursorCtx.beginPath();
+        cursorCtx.arc(currentX, currentY, 5, 0, Math.PI * 2);
+        cursorCtx.fillStyle = currentBrush === "Rainbow" ? `hsl(${rainbowHue}, 100%, 55%)` : activeColor;
+        cursorCtx.fill();
+        return;
+      }
+
+      isDrawing = false;
+      prevX = 0;
+      prevY = 0;
+      lblGesture.textContent = "Tracking (Standby)";
+    }
+
+    const hands = new Hands({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
+
+    hands.setOptions({
+      maxNumHands: 1,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.7,
+      minTrackingConfidence: 0.7
+    });
+
+    hands.onResults(onResults);
+
+    cameraInstance = new Camera(videoElement, {
+      onFrame: async () => {
+        await hands.send({ image: videoElement });
+      },
+      width: 1280,
+      height: 720
+    });
+
+    cameraInstance.start().catch((err) => {
+      lblGesture.textContent = "Camera Error: Check Permissions";
+      console.error(err);
+    });
+  </script>
+</body>
+</html>
