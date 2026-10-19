@@ -1,4 +1,4 @@
-# GestureCanvas 🖐️✨
+# AirPaint🖐️✨
 
 > **Zero-dependency, browser-native Air Canvas powered by MediaPipe and HTML5 Canvas.**  
 > Draw, erase, cycle vibrant color palettes, switch dynamic brushes, and navigate history using natural hand gestures through your webcam.
